@@ -1,0 +1,101 @@
+#automation ISRC
+
+#Libraries
+from typing import final
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+import pandas as pd
+from playwright.sync_api import Playwright, sync_playwright, expect
+
+# Using my personal API credentials
+client_credentials_manager = SpotifyClientCredentials(client_id='YOUR_CLIENT_ID', client_secret='YOUR_CLIENT_SECRET')
+sp = spotipy.Spotify(client_credentials_manager=client_credentials_manager)
+
+# selecting a playlist (playlist_id is in the sharinglink before '?' sign)
+playlist_id = '3QS6sbApgDFRrjfGAarrdt'
+results = sp.playlist_tracks(playlist_id)
+
+
+#place where to store the csv file
+path = 'YOUR_PATH'
+
+# Extract track information from results and construct sharing links with f'string
+d = []
+for track in results['items']:
+    new_df = track['track']['artists']
+    d.append(
+    {
+    'track_name' : track['track']['name'],
+    'artists' : new_df[0]['name'],
+    'track_id' : track['track']['id'],
+    'sharing_link' : f'https://open.spotify.com/intl-de/track/{track["track"]["id"]}'
+    }
+    )
+
+#This is used to fetch the next page of tracks
+while results['next']:
+    results = sp.next(results)  # Fetch the next page of tracks
+    for track in results['items']:
+        new_df = track['track']['artists']
+        d.append({
+            'track_name': track['track']['name'],
+            'artists': new_df[0]['name'],
+            'track_id': track['track']['id'],
+            'sharing_link': f'https://open.spotify.com/intl-de/track/{track["track"]["id"]}'  # Use track["track"]["id"] here
+        })
+
+# make output to a dataframe
+df = pd.DataFrame(d)
+
+#use recorded codegen code and create forloop for every track
+#of the extracted playlist information
+
+def run(playwright: Playwright) -> None:
+    new_df = []
+    browser = playwright.chromium.launch(headless=False)
+    context = browser.new_context()
+    page = context.new_page()
+    page.goto("https://www.isrcfinder.com/")
+
+    try:
+        for i in df['sharing_link']:
+            page.get_by_placeholder("Song Link or Artist + Track").click()
+            page.get_by_placeholder("Song Link or Artist + Track").fill(i)
+            page.get_by_role("button", name="Find ISRC").click()
+
+            try:
+                ISRC_element = page.wait_for_selector('//*[@id="ISRC"]/div/div/div/strong', timeout=30000)
+                ISRC = ISRC_element.text_content()
+                new_df.append(ISRC)
+            except TimeoutError:
+                print(f"Timeout occurred for {i}. Inserting null value for ISRC.")
+                new_df.append(None)
+                continue
+
+            page.get_by_text("ISRC Finder Find the ISRC for").click()
+            page.get_by_role("link", name="ISRC Finder").click()
+
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+        # Close the browser and context if an exception occurs
+        context.close()
+        browser.close()
+        return  # Exit the function
+
+    finally:
+        context.close()
+        browser.close()
+
+# form the extracted ISRC's to a pandas df and join them with track information df
+
+    ISRC_df = pd.DataFrame(new_df)
+    ISRC_df.rename(columns={0: 'ISRC'}, inplace=True)
+    final_df = pd.concat([df, ISRC_df], axis=1)
+    print(final_df)
+
+# export the output as a csv file to your computer
+# give it a personal name in the link after 'path +' !!!
+    final_df.to_csv(path + 'NAME_OF_FILE', index=False)
+
+with sync_playwright() as playwright:
+    run(playwright)
